@@ -23,7 +23,7 @@ stages:
       displayName: 'Docker Login'
       inputs:
         command: 'login'
-        containerRegistry: 'Nexus-DockerRegistry-Redshift-CICD'
+        containerRegistry: 'Nexus-DockerRegistry'
     - script: |
         make image-omni-infra-provider-vsphere REGISTRY=$(registry) USERNAME=redshift PUSH=true
       displayName: 'Build and Push Container Image'
