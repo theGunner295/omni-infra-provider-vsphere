@@ -17,23 +17,35 @@
     },
     "network": {
       "type": "string",
-      "description": "network name"
+      "description": "Network name"
     },
     "datastore": {
       "type": "string",
-      "description": "datastore name"
+      "description": "Datastore name"
     },
     "datacenter": {
       "type": "string",
-      "description": "datacenter name"
+      "description": "Datacenter name"
+    },
+    "cluster": {
+      "type": "string",
+      "description": "Cluster name. Can be used alone (uses default resource pool) or with resource_pool (to specify a pool within the cluster)"
     },
     "resource_pool": {
       "type": "string",
-      "description": "resource pool name"
+      "description": "Resource pool path. Can be a full path, or a relative path within a cluster if cluster is also specified"
     },
     "template": {
       "type": "string",
       "description": "VM template name to clone from"
+    },
+    "template_folder": {
+      "type": "string",
+      "description": "Folder path where template is located (e.g., '/Templates' or 'Templates/Talos')"
+    },
+    "vm_folder": {
+      "type": "string",
+      "description": "Folder path where VMs should be created (e.g., '/VMs/Production')"
     }
   },
   "required": [
@@ -41,6 +53,8 @@
     "memory",
     "disk_size",
     "datastore",
-    "network"
+    "network",
+    "datacenter",
+    "template"
   ]
 }

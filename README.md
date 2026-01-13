@@ -47,6 +47,36 @@ See [test/](./test/) for some examples, but generally:
 - Create a machine class with `omnictl apply -f machineclass.yaml`
 - Create a cluster that uses the machine class with `omnictl cluster template sync -f cluster-template.yaml`
 
+### Configuration Options
+
+The provider supports several configuration options for organizing and managing vSphere resources:
+
+**Cluster and Resource Pool:**
+- **`cluster`**: Specify a vSphere cluster name (uses default resource pool)
+- **`resource_pool`**: Specify a resource pool path
+- **Both together**: Use `cluster` + `resource_pool` to reference a pool within a cluster
+
+Examples:
+```yaml
+# Simple: Use cluster's default resource pool
+cluster: "Cluster01"
+
+# Within cluster: Use specific pool in cluster
+cluster: "Cluster01"
+resource_pool: "Resources/Production"
+
+# Full path: Specify complete path
+resource_pool: "Cluster01/Resources/Production"
+```
+
+**Template Organization:**
+- **`template_folder`**: Organize templates in folders (e.g., `"Templates/Talos"`)
+
+**VM Organization:**
+- **`vm_folder`**: Create VMs in specific folders (e.g., `"VMs/Production/K8s"`)
+
+See [test/machineclass.yaml](./test/machineclass.yaml) for a complete example.
+
 ## Development
 
 See `make help` for general build info.

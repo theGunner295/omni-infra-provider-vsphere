@@ -12,5 +12,17 @@ spec:
       network: "VM Network"
       datastore: "datastore1"
       datacenter: "Datacenter"
-      resource_pool: "pool1"
+      
+      # Option 1: Use cluster only (default resource pool)
+      cluster: "Cluster01"
+      
+      # Option 2: Use cluster + specific resource pool within cluster
+      # cluster: "Cluster01"
+      # resource_pool: "Resources/Production"
+      
+      # Option 3: Use full resource pool path
+      # resource_pool: "Cluster01/Resources/Production"
+      
       template: "talos-template"
+      template_folder: "Templates/Talos" # Optional: organize templates
+      vm_folder: "VMs/Production"        # Optional: organize VMs

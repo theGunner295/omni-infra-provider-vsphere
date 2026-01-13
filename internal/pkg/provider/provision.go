@@ -55,16 +55,28 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 
 				vmName := pctx.GetRequestID()
 
-				logger.Info("creating VM",
+				logFields := []zap.Field{
 					zap.String("name", vmName),
 					zap.String("datacenter", data.Datacenter),
-					zap.String("resource_pool", data.ResourcePool),
 					zap.String("network", data.Network),
 					zap.String("datastore", data.Datastore),
 					zap.Uint("cpu", data.CPU),
 					zap.Uint("memory", data.Memory),
 					zap.Uint64("disk_size", data.DiskSize),
-				)
+				}
+				if data.Cluster != "" {
+					logFields = append(logFields, zap.String("cluster", data.Cluster))
+				}
+				if data.ResourcePool != "" {
+					logFields = append(logFields, zap.String("resource_pool", data.ResourcePool))
+				}
+				if data.TemplateFolder != "" {
+					logFields = append(logFields, zap.String("template_folder", data.TemplateFolder))
+				}
+				if data.VMFolder != "" {
+					logFields = append(logFields, zap.String("vm_folder", data.VMFolder))
+				}
+				logger.Info("creating VM", logFields...)
 
 				// Set up the finder with datacenter context
 				finder := find.NewFinder(p.vsphereClient.Client, true)
@@ -77,22 +89,75 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 
 				finder.SetDatacenter(dc)
 
-				// Find the folder where VMs will be created (default to VM folder in datacenter)
-				folder, err := finder.DefaultFolder(ctx)
-				if err != nil {
-					return provision.NewRetryErrorf(time.Second*10, "failed to find VM folder: %w", err)
+				// Find the folder where VMs will be created
+				var folder *object.Folder
+				if data.VMFolder != "" {
+					folder, err = finder.Folder(ctx, data.VMFolder)
+					if err != nil {
+						return provision.NewRetryErrorf(time.Second*10, "failed to find VM folder %q: %w", data.VMFolder, err)
+					}
+					logger.Info("using custom VM folder", zap.String("folder", data.VMFolder))
+				} else {
+					folder, err = finder.DefaultFolder(ctx)
+					if err != nil {
+						return provision.NewRetryErrorf(time.Second*10, "failed to find default VM folder: %w", err)
+					}
 				}
 
-				// Find the resource pool
-				resourcePool, err := finder.ResourcePool(ctx, data.ResourcePool)
-				if err != nil {
-					return provision.NewRetryErrorf(time.Second*10, "failed to find resource pool %q: %w", data.ResourcePool, err)
+				// Find the resource pool - support cluster, resource_pool, or both
+				var resourcePool *object.ResourcePool
+				if data.Cluster != "" && data.ResourcePool != "" {
+					// Use specific resource pool within a cluster
+					cluster, err := finder.ClusterComputeResource(ctx, data.Cluster)
+					if err != nil {
+						return provision.NewRetryErrorf(time.Second*10, "failed to find cluster %q: %w", data.Cluster, err)
+					}
+					// Set the cluster as the context for finding the resource pool
+					finder.SetDatacenter(dc)
+					resourcePoolPath := cluster.InventoryPath + "/" + data.ResourcePool
+					resourcePool, err = finder.ResourcePool(ctx, resourcePoolPath)
+					if err != nil {
+						return provision.NewRetryErrorf(time.Second*10, "failed to find resource pool %q in cluster %q: %w", data.ResourcePool, data.Cluster, err)
+					}
+					logger.Info("using resource pool in cluster", zap.String("cluster", data.Cluster), zap.String("resource_pool", data.ResourcePool))
+				} else if data.Cluster != "" {
+					// Use cluster's default resource pool
+					cluster, err := finder.ClusterComputeResource(ctx, data.Cluster)
+					if err != nil {
+						return provision.NewRetryErrorf(time.Second*10, "failed to find cluster %q: %w", data.Cluster, err)
+					}
+					resourcePool, err = cluster.ResourcePool(ctx)
+					if err != nil {
+						return provision.NewRetryErrorf(time.Second*10, "failed to get default resource pool from cluster %q: %w", data.Cluster, err)
+					}
+					logger.Info("using cluster default resource pool", zap.String("cluster", data.Cluster))
+				} else if data.ResourcePool != "" {
+					// Use explicit resource pool path (full path including cluster)
+					resourcePool, err = finder.ResourcePool(ctx, data.ResourcePool)
+					if err != nil {
+						return provision.NewRetryErrorf(time.Second*10, "failed to find resource pool %q: %w", data.ResourcePool, err)
+					}
+					logger.Info("using explicit resource pool path", zap.String("resource_pool", data.ResourcePool))
+				} else {
+					return provision.NewRetryErrorf(time.Second*10, "either cluster or resource_pool (or both) must be specified")
 				}
 
-				// Find the template VM
-				template, err := finder.VirtualMachine(ctx, data.Template)
-				if err != nil {
-					return provision.NewRetryErrorf(time.Second*10, "failed to find template %q: %w", data.Template, err)
+				// Find the template VM - support template folders
+				var template *object.VirtualMachine
+				if data.TemplateFolder != "" {
+					// Look for template in specific folder
+					templatePath := data.TemplateFolder + "/" + data.Template
+					template, err = finder.VirtualMachine(ctx, templatePath)
+					if err != nil {
+						return provision.NewRetryErrorf(time.Second*10, "failed to find template %q in folder %q: %w", data.Template, data.TemplateFolder, err)
+					}
+					logger.Info("found template in folder", zap.String("template", data.Template), zap.String("folder", data.TemplateFolder))
+				} else {
+					// Look for template in datacenter context
+					template, err = finder.VirtualMachine(ctx, data.Template)
+					if err != nil {
+						return provision.NewRetryErrorf(time.Second*10, "failed to find template %q: %w", data.Template, err)
+					}
 				}
 
 				// Find the datastore
