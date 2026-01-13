@@ -114,7 +114,8 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 					}
 					// Set the cluster as the context for finding the resource pool
 					finder.SetDatacenter(dc)
-					resourcePoolPath := cluster.InventoryPath + "/" + data.ResourcePool
+					// Resource pools in a cluster are under the Resources folder
+					resourcePoolPath := cluster.InventoryPath + "/Resources/" + data.ResourcePool
 					resourcePool, err = finder.ResourcePool(ctx, resourcePoolPath)
 					if err != nil {
 						return provision.NewRetryErrorf(time.Second*10, "failed to find resource pool %q in cluster %q: %w", data.ResourcePool, data.Cluster, err)
@@ -174,6 +175,57 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 				joinConfigBytes := []byte(pctx.ConnectionParams.JoinConfig)
 				joinConfigB64 := base64.StdEncoding.EncodeToString(joinConfigBytes)
 
+				// Find the network
+				var network object.NetworkReference
+				network, err = finder.Network(ctx, data.Network)
+				if err != nil {
+					return provision.NewRetryErrorf(time.Second*10, "failed to find network %q: %w", data.Network, err)
+				}
+
+				// Get template devices to configure network and disk
+				devices, err := template.Device(ctx)
+				if err != nil {
+					return provision.NewRetryErrorf(time.Second*10, "failed to get template devices: %w", err)
+				}
+
+				// Prepare device changes for network and disk
+				var deviceChanges []types.BaseVirtualDeviceConfigSpec
+
+				// Configure network adapter
+				netCards := devices.SelectByType((*types.VirtualEthernetCard)(nil))
+				if len(netCards) > 0 {
+					// Modify the first network card to use the specified network
+					card := netCards[0].(types.BaseVirtualEthernetCard).GetVirtualEthernetCard()
+					card.Backing, err = network.EthernetCardBackingInfo(ctx)
+					if err != nil {
+						return provision.NewRetryErrorf(time.Second*10, "failed to create network backing: %w", err)
+					}
+					card.Connectable = &types.VirtualDeviceConnectInfo{
+						StartConnected:    true,
+						AllowGuestControl: true,
+						Connected:         false,
+					}
+					deviceChanges = append(deviceChanges, &types.VirtualDeviceConfigSpec{
+						Operation: types.VirtualDeviceConfigSpecOperationEdit,
+						Device:    netCards[0],
+					})
+				}
+
+				// Configure disk resize if DiskSize is specified
+				if data.DiskSize > 0 {
+					disks := devices.SelectByType((*types.VirtualDisk)(nil))
+					if len(disks) > 0 {
+						disk := disks[0].(*types.VirtualDisk)
+						// Convert GiB to bytes
+						disk.CapacityInBytes = int64(data.DiskSize) * 1024 * 1024 * 1024
+						disk.CapacityInKB = int64(data.DiskSize) * 1024 * 1024
+						deviceChanges = append(deviceChanges, &types.VirtualDeviceConfigSpec{
+							Operation: types.VirtualDeviceConfigSpecOperationEdit,
+							Device:    disk,
+						})
+					}
+				}
+
 				// Clone the VM from template
 				cloneSpec := types.VirtualMachineCloneSpec{
 					Location: types.VirtualMachineRelocateSpec{
@@ -181,8 +233,9 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 						Datastore: &datastoreRef,
 					},
 					Config: &types.VirtualMachineConfigSpec{
-						NumCPUs:  int32(data.CPU),
-						MemoryMB: int64(data.Memory),
+						NumCPUs:       int32(data.CPU),
+						MemoryMB:      int64(data.Memory),
+						DeviceChange:  deviceChanges,
 						ExtraConfig: []types.BaseOptionValue{
 							&types.OptionValue{Key: "disk.enableUUID", Value: "TRUE"},
 							&types.OptionValue{Key: "guestinfo.talos.config", Value: joinConfigB64},
