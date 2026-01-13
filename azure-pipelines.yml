@@ -17,13 +17,13 @@ stages:
   - job: build
     displayName: 'Build Omni Infra Provider'
     pool:
-      name: ${{variables.pool}}
+      name: $(pool)
     steps:
     - task: Docker@2
       displayName: 'Docker Login'
       inputs:
         command: 'login'
         containerRegistry: 'Nexus-DockerRegistry-Redshift-CICD'
-    - task: CMake@1
-      inputs:
-        cmakeArgs: 'image-omni-infra-provider-vsphere REGISTRY=$(variables.registry) USERNAME="redshift" PUSH=true'
+    - script: |
+        make image-omni-infra-provider-vsphere REGISTRY=$(registry) USERNAME=redshift PUSH=true
+      displayName: 'Build and Push Container Image'
