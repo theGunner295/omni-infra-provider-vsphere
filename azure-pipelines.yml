@@ -6,7 +6,7 @@ trigger:
 
 variables:
 - name: registry
-  value: 'nexus.ad.redshiftent.com'
+  value: 'nexus.ad.redshiftent.com/docker-hosted'
 - name: pool
   value: 'Redshift-AzureVMSS-x64'
 
@@ -26,4 +26,5 @@ stages:
         containerRegistry: 'Nexus-DockerRegistry-Redshift-CICD'
     - script: |
         make image-omni-infra-provider-vsphere REGISTRY=$(registry) USERNAME=redshift PUSH=true
+        make image-omni-infra-provider-vsphere REGISTRY=$(registry) USERNAME=redshift IMAGE_TAG=latest PUSH=true
       displayName: 'Build and Push Container Image'
