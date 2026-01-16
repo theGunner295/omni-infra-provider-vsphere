@@ -81,8 +81,9 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("error connecting to vSphere: %w", err)
 		}
 
-		// Start session keepalive to prevent session timeout
-		// This will maintain the session every 10 minutes
+		// Start session keepalive monitor to detect session expiry
+		// This checks the session status every 10 minutes and logs warnings
+		// Actual re-authentication happens on-demand when operations fail
 		keepAliveCtx, keepAliveCancel := context.WithCancel(cmd.Context())
 		defer keepAliveCancel()
 
@@ -98,22 +99,19 @@ var rootCmd = &cobra.Command{
 					manager := session.NewManager(vsphereClient.Client)
 					active, err := manager.SessionIsActive(keepAliveCtx)
 					if err != nil {
-						logger.Warn("failed to check session status", zap.Error(err))
+						logger.Warn("failed to check session status during keepalive", zap.Error(err))
 						continue
 					}
 					if !active {
-						logger.Info("session not active, attempting to re-login")
-						if err := manager.Login(keepAliveCtx, u.User); err != nil {
-							logger.Error("keepalive re-login failed", zap.Error(err))
-						} else {
-							logger.Info("keepalive re-login successful")
-						}
+						logger.Warn("vSphere session is not active - will re-authenticate on next operation")
+					} else {
+						logger.Debug("vSphere session is active")
 					}
 				}
 			}
 		}()
 
-		provisioner := provider.NewProvisioner(vsphereClient, logger)
+		provisioner := provider.NewProvisioner(vsphereClient, logger, u)
 
 		ip, err := infra.NewProvider(meta.ProviderID, provisioner, infra.ProviderConfig{
 			Name:        cfg.providerName,

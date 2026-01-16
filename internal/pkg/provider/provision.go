@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -52,28 +53,28 @@ func (p *Provisioner) ensureAuthenticated(ctx context.Context) error {
 	active, err := manager.SessionIsActive(ctx)
 	if err != nil {
 		p.logger.Warn("failed to check session status", zap.Error(err))
-		// Try to login anyway
+		// Continue to attempt re-login
+		active = false
 	}
 	
 	if !active {
 		p.logger.Info("vSphere session is not active, attempting to re-login")
 		
-		// Attempt to login again using the existing client's credentials
-		userSession, err := manager.UserSession(ctx)
+		// Logout first to clear any stale session
+		_ = manager.Logout(ctx)
+		
+		// Re-login using stored credentials
+		if p.vsphereURL == nil || p.vsphereURL.User == nil {
+			return fmt.Errorf("vSphere credentials not available for re-authentication")
+		}
+		
+		err = manager.Login(ctx, p.vsphereURL.User)
 		if err != nil {
-			p.logger.Error("failed to get user session", zap.Error(err))
+			p.logger.Error("failed to re-login to vSphere", zap.Error(err))
 			return fmt.Errorf("vSphere session expired and re-login failed: %w", err)
 		}
 		
-		if userSession == nil {
-			// Session doesn't exist, need to re-login
-			err = manager.Login(ctx, p.vsphereClient.URL().User)
-			if err != nil {
-				p.logger.Error("failed to re-login to vSphere", zap.Error(err))
-				return fmt.Errorf("vSphere session expired and re-login failed: %w", err)
-			}
-			p.logger.Info("successfully re-authenticated to vSphere")
-		}
+		p.logger.Info("successfully re-authenticated to vSphere")
 	}
 	
 	return nil
@@ -123,13 +124,15 @@ func (p *Provisioner) checkAndHandleAuthError(ctx context.Context, err error, op
 type Provisioner struct {
 	vsphereClient *govmomi.Client
 	logger        *zap.Logger
+	vsphereURL    *url.URL
 }
 
 // NewProvisioner creates a new provisioner.
-func NewProvisioner(vsphereClient *govmomi.Client, logger *zap.Logger) *Provisioner {
+func NewProvisioner(vsphereClient *govmomi.Client, logger *zap.Logger, vsphereURL *url.URL) *Provisioner {
 	return &Provisioner{
 		vsphereClient: vsphereClient,
 		logger:        logger,
+		vsphereURL:    vsphereURL,
 	}
 }
 
