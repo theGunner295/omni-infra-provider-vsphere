@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/siderolabs/omni/client/pkg/client"
 	"github.com/siderolabs/omni/client/pkg/infra"
@@ -81,14 +82,34 @@ var rootCmd = &cobra.Command{
 		}
 
 		// Start session keepalive to prevent session timeout
-		// This will maintain the session every 5 minutes by default
+		// This will maintain the session every 10 minutes
 		keepAliveCtx, keepAliveCancel := context.WithCancel(cmd.Context())
 		defer keepAliveCancel()
 
-		manager := session.NewManager(vsphereClient.Client)
 		go func() {
-			if err := manager.KeepAlive(keepAliveCtx, vsphereClient.RoundTripper); err != nil {
-				logger.Error("session keepalive failed", zap.Error(err))
+			ticker := time.NewTicker(10 * time.Minute)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-keepAliveCtx.Done():
+					return
+				case <-ticker.C:
+					manager := session.NewManager(vsphereClient.Client)
+					active, err := manager.SessionIsActive(keepAliveCtx)
+					if err != nil {
+						logger.Warn("failed to check session status", zap.Error(err))
+						continue
+					}
+					if !active {
+						logger.Info("session not active, attempting to re-login")
+						if err := manager.Login(keepAliveCtx, u.User); err != nil {
+							logger.Error("keepalive re-login failed", zap.Error(err))
+						} else {
+							logger.Info("keepalive re-login successful")
+						}
+					}
+				}
 			}
 		}()
 
