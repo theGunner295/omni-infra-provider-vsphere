@@ -19,6 +19,7 @@ import (
 	"github.com/siderolabs/omni/client/pkg/infra"
 	"github.com/spf13/cobra"
 	"github.com/vmware/govmomi"
+	"github.com/vmware/govmomi/session"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"gopkg.in/yaml.v3"
@@ -79,7 +80,19 @@ var rootCmd = &cobra.Command{
 			return fmt.Errorf("error connecting to vSphere: %w", err)
 		}
 
-		provisioner := provider.NewProvisioner(vsphereClient)
+		// Start session keepalive to prevent session timeout
+		// This will maintain the session every 5 minutes by default
+		keepAliveCtx, keepAliveCancel := context.WithCancel(cmd.Context())
+		defer keepAliveCancel()
+
+		manager := session.NewManager(vsphereClient.Client)
+		go func() {
+			if err := manager.KeepAlive(keepAliveCtx, vsphereClient.RoundTripper); err != nil {
+				logger.Error("session keepalive failed", zap.Error(err))
+			}
+		}()
+
+		provisioner := provider.NewProvisioner(vsphereClient, logger)
 
 		ip, err := infra.NewProvider(meta.ProviderID, provisioner, infra.ProviderConfig{
 			Name:        cfg.providerName,

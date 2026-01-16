@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/siderolabs/omni/client/pkg/infra/provision"
@@ -17,6 +18,8 @@ import (
 	"github.com/vmware/govmomi"
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/session"
+	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
 	"go.uber.org/zap"
 
@@ -27,15 +30,106 @@ const (
 	GiB = uint64(1024 * 1024 * 1024)
 )
 
+// isAuthenticationError checks if an error is related to authentication/session expiry.
+func isAuthenticationError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errMsg := err.Error()
+	// Check for common authentication-related error messages
+	return strings.Contains(errMsg, "NotAuthenticated") ||
+		strings.Contains(errMsg, "not authenticated") ||
+		strings.Contains(errMsg, "session is not authenticated") ||
+		strings.Contains(errMsg, "The session is not authenticated")
+}
+
+// ensureAuthenticated checks if the session is active and attempts to re-login if needed.
+func (p *Provisioner) ensureAuthenticated(ctx context.Context) error {
+	manager := session.NewManager(p.vsphereClient.Client)
+	
+	// Check if session is active
+	active, err := manager.SessionIsActive(ctx)
+	if err != nil {
+		p.logger.Warn("failed to check session status", zap.Error(err))
+		// Try to login anyway
+	}
+	
+	if !active {
+		p.logger.Info("vSphere session is not active, attempting to re-login")
+		
+		// Attempt to login again using the existing client's credentials
+		userSession, err := manager.UserSession(ctx)
+		if err != nil {
+			p.logger.Error("failed to get user session", zap.Error(err))
+			return fmt.Errorf("vSphere session expired and re-login failed: %w", err)
+		}
+		
+		if userSession == nil {
+			// Session doesn't exist, need to re-login
+			err = manager.Login(ctx, p.vsphereClient.URL().User)
+			if err != nil {
+				p.logger.Error("failed to re-login to vSphere", zap.Error(err))
+				return fmt.Errorf("vSphere session expired and re-login failed: %w", err)
+			}
+			p.logger.Info("successfully re-authenticated to vSphere")
+		}
+	}
+	
+	return nil
+}
+
+// checkAndHandleAuthError wraps operations that might fail due to authentication issues.
+func (p *Provisioner) checkAndHandleAuthError(ctx context.Context, err error, operation string) error {
+	if err == nil {
+		return nil
+	}
+	
+	// Check if it's a SOAP fault with NotAuthenticated
+	var soapFault *soap.Fault
+	if errors.As(err, &soapFault) {
+		if _, ok := soapFault.VimFault().(types.NotAuthenticated); ok {
+			p.logger.Warn("authentication error detected, attempting to re-authenticate",
+				zap.String("operation", operation),
+				zap.Error(err))
+			
+			if authErr := p.ensureAuthenticated(ctx); authErr != nil {
+				return fmt.Errorf("%s failed with authentication error and re-auth failed: %w (original: %v)", operation, authErr, err)
+			}
+			
+			// Return a retryable error to trigger retry
+			return provision.NewRetryErrorf(time.Second*5, "%s failed due to authentication, retry after re-auth: %w", operation, err)
+		}
+	}
+	
+	// Check for authentication error in message
+	if isAuthenticationError(err) {
+		p.logger.Warn("authentication error detected in error message, attempting to re-authenticate",
+			zap.String("operation", operation),
+			zap.Error(err))
+		
+		if authErr := p.ensureAuthenticated(ctx); authErr != nil {
+			return fmt.Errorf("%s failed with authentication error and re-auth failed: %w (original: %v)", operation, authErr, err)
+		}
+		
+		// Return a retryable error to trigger retry
+		return provision.NewRetryErrorf(time.Second*5, "%s failed due to authentication, retry after re-auth: %w", operation, err)
+	}
+	
+	return err
+}
+
 // Provisioner implements Talos emulator infra provider.
 type Provisioner struct {
 	vsphereClient *govmomi.Client
+	logger        *zap.Logger
 }
 
 // NewProvisioner creates a new provisioner.
-func NewProvisioner(vsphereClient *govmomi.Client) *Provisioner {
+func NewProvisioner(vsphereClient *govmomi.Client, logger *zap.Logger) *Provisioner {
 	return &Provisioner{
 		vsphereClient: vsphereClient,
+		logger:        logger,
 	}
 }
 
@@ -84,6 +178,7 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 				// Find the datacenter
 				dc, err := finder.Datacenter(ctx, data.Datacenter)
 				if err != nil {
+					err = p.checkAndHandleAuthError(ctx, err, "find datacenter")
 					return provision.NewRetryErrorf(time.Second*10, "failed to find datacenter %q: %w", data.Datacenter, err)
 				}
 
@@ -280,6 +375,7 @@ func (p *Provisioner) ProvisionSteps() []provision.Step[*resources.Machine] {
 				// Find the datacenter
 				dc, err := finder.Datacenter(ctx, data.Datacenter)
 				if err != nil {
+					err = p.checkAndHandleAuthError(ctx, err, "find datacenter")
 					return provision.NewRetryErrorf(time.Second*10, "failed to find datacenter %q: %w", data.Datacenter, err)
 				}
 
@@ -349,6 +445,7 @@ func (p *Provisioner) Deprovision(ctx context.Context, logger *zap.Logger, machi
 	// Find the datacenter
 	dc, err := finder.Datacenter(ctx, datacenter)
 	if err != nil {
+		err = p.checkAndHandleAuthError(ctx, err, "find datacenter")
 		return fmt.Errorf("failed to find datacenter %q: %w", datacenter, err)
 	}
 
